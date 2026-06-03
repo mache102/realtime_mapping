@@ -1,14 +1,28 @@
 #!/usr/bin/env python3
 
-import rclpy
-from rclpy.node import Node
+import sys
+import os
+
+# Allow direct script execution alongside package-mode imports.
+# When run as ``python3 realtime_mapping/realtime_mapping/realtime_mapper.py``
+# the ``__package__`` is ``None``, which breaks relative imports.  Fix it.
+if __package__ is None:
+    __package__ = "realtime_mapping.realtime_mapping"
+    # Script is at <repo>/realtime_mapping/realtime_mapping/realtime_mapper.py
+    # Go up 3 levels to reach the repo root so Python can resolve the
+    # ``realtime_mapping.realtime_mapping`` package.
+    _repo_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.colors import ListedColormap
 import yaml
 import csv
-import os
 from datetime import datetime
 import threading
 from operator import attrgetter
@@ -16,14 +30,24 @@ from functools import partial
 import importlib
 import argparse
 import math
-import sys
 from typing import Dict, Any, Tuple, Optional, List
+
+try:
+    import rclpy  # type: ignore[import-untyped]
+    from rclpy.node import Node as _BaseNode  # type: ignore[import-untyped]
+
+    _HAS_ROS = True
+except ImportError:
+    from .ros_stubs import rclpy  # type: ignore[no-redef]  # noqa: F811
+    from .ros_stubs import Node as _BaseNode  # type: ignore[no-redef]
+
+    _HAS_ROS = False
 
 from .remote_plot_server import RemotePlotServer, get_lan_ip, resolve_static_dir
 from .dummy_data_generator import DummyDataGenerator
 
 
-class RealtimeMapper(Node):
+class RealtimeMapper(_BaseNode):
     def __init__(
         self,
         config_path: str,
@@ -44,6 +68,10 @@ class RealtimeMapper(Node):
 
         # Initialize map data structures
         self.initialize_map()
+
+        # Extract display config early — needed by both dummy data and viz
+        display_config = self.config['mapping'].get('display', {})
+        self.update_rate = display_config.get('update_rate', 10.0)
 
         # Thread control
         self.lock = threading.Lock()
@@ -453,7 +481,7 @@ class RealtimeMapper(Node):
         self.ax.legend()
 
         # Animation timing configuration
-        self.update_rate = display_config.get('update_rate', 10.0)
+        # (self.update_rate is already set in __init__)
 
         plt.tight_layout()
 
@@ -693,7 +721,20 @@ def main():
 
     args = parser.parse_args()
 
-    rclpy.init()
+    # Guard: dummy-data mode doesn't need ROS, but real mode does
+    if not args.dummy_data and not _HAS_ROS:
+        print(
+            "ERROR: ROS 2 (rclpy) is not installed.",
+            file=sys.stderr,
+        )
+        print(
+            "Install ROS 2, or use --dummy-data for offline mode.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not args.dummy_data:
+        rclpy.init()
 
     try:
         if args.interactive:
@@ -723,7 +764,8 @@ def main():
     finally:
         if 'mapper' in locals():
             mapper.shutdown()
-        rclpy.shutdown()
+        if not args.dummy_data:
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
