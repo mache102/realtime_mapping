@@ -106,11 +106,21 @@ class RemotePlotServer:
                 disconnected.add(client)
         self.clients -= disconnected
 
+
     def run(self) -> None:
-        """Run the FastAPI server (blocking — call from a daemon thread)."""
+        """Run the FastAPI server."""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self.loop = loop
+
+        # --- ADD THIS LOGGING BLOCK ---
+        real_ip = get_lan_ip()
+        print("\n" + "="*50)
+        print(f"🚀 SERVER LIVE! Access the remote plot at:")
+        print(f"👉 Local (this machine): http://127.0.0.1:{self.port}")
+        print(f"👉 LAN (Phone/Tablet):   http://{real_ip}:{self.port}")
+        print("="*50 + "\n")
+        # ------------------------------
 
         config = uvicorn.Config(
             self.app,

@@ -35,21 +35,37 @@ This section gets the backend mapper running locally. The remote plot
 - [`uv`](https://docs.astral.sh/uv/) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - [`pnpm`](https://pnpm.io/) — `curl -fsSL https://get.pnpm.io/install.sh | sh -`
 
+Setup ROS2
+```bash
+chmod +x ./ros2.sh
+
+./ros2.sh
+```
+
+
+
 ### 1. Clone and create the environment
 
 ```bash
 git clone https://github.com/your-repo/realtime_mapping.git
 cd realtime_mapping
 
-uv venv
+# Create the venv inheriting the system-wide ROS 2 paths
+uv venv --system-site-packages
 source .venv/bin/activate
+
+# Install project-specific dependencies (uv bridges to the system rclpy)
 uv pip install numpy matplotlib PyYAML
 ```
 
 ### 2. Verify it works with dummy data
 
 ```bash
-python3 realtime_mapping/realtime_mapping/realtime_mapper.py --dummy-data
+
+source .venv/bin/activate
+
+cd realtime_mapping
+python3 realtime_mapping/realtime_mapper.py --dummy-data
 ```
 
 A matplotlib window opens showing a live heatmap with moving position
@@ -98,12 +114,13 @@ cd ..
 source .venv/bin/activate
 
 # Dummy data (no ROS needed):
-python3 realtime_mapping/realtime_mapping/realtime_mapper.py \
+cd realtime_mapping
+python3 realtime_mapping/realtime_mapper.py \
   --dummy-data \
   --remote-plot
 
 # With a real config:
-python3 realtime_mapping/realtime_mapping/realtime_mapper.py \
+python3 realtime_mapping/realtime_mapper.py \
   --config realtime_mapping/config/generated_config.yaml \
   --remote-plot
 ```
