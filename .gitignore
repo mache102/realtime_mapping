@@ -56,3 +56,7 @@ qtcreator-*
 
 # Catkin custom files
 CATKIN_IGNORE
+
+# Remote plot frontend
+remote-plot/dist/
+remote-plot/node_modules/

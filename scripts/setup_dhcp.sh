@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+#
+# setup_dhcp.sh — Reserve a static LAN IP via netplan (Ubuntu 18.04+).
+#
+# This script configures the primary Ethernet or Wi-Fi interface to use
+# a DHCP reservation so the laptop always gets the same local IP address.
+# After running this once, you can reliably reach the remote plot server
+# from your phone/tablet at the same URL.
+#
+# Usage:
+#   sudo ./scripts/setup_dhcp.sh [INTERFACE] [IP_ADDRESS]
+#
+# Examples:
+#   sudo ./scripts/setup_dhcp.sh eth0 10.0.0.221
+#   sudo ./scripts/setup_dhcp.sh wlan0 192.168.1.100
+#
+# If INTERFACE and IP_ADDRESS are omitted the script attempts to detect
+# the active interface and proposes an IP in the same subnet.
+#
+
+set -euo pipefail
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+info()  { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
+warn()  { echo -e "\033[1;33m[WARN]\033[0m  $*"; }
+err()   { echo -e "\033[1;31m[ERR]\033[0m   $*"; }
+ok()    { echo -e "\033[1;32m[OK]\033[0m    $*"; }
+
+# ── Detect active interface ────────────────────────────────────────────────
+
+detect_iface() {
+    # Prefer Ethernet, fall back to Wi-Fi
+    for iface in eth0 enp0s3 enp0s8 ens3 ens8 enx*; do
+        if ip link show "$iface" &>/dev/null && \
+           ip link show "$iface" | grep -q "state UP"; then
+            echo "$iface"
+            return
+        fi
+    done
+    # Wi-Fi fallback
+    for iface in wlan0 wlp2s0 wlp3s0 wlx*; do
+        if ip link show "$iface" &>/dev/null && \
+           ip link show "$iface" | grep -q "state UP"; then
+            echo "$iface"
+            return
+        fi
+    done
+    return 1
+}
+
+# ── Detect current subnet ──────────────────────────────────────────────────
+
+detect_subnet() {
+    local iface="$1"
+    local cidr
+    cidr=$(ip -4 addr show "$iface" 2>/dev/null | grep -oP 'inet \K[\d.]+/\d+')
+    if [ -z "$cidr" ]; then
+        return 1
+    fi
+    echo "$cidr"
+}
+
+# ── Derive static IP ──────────────────────────────────────────────────────
+
+suggest_ip() {
+    local cidr="$1"
+    local base="${cidr%/*}"
+    # Use .221 as a memorable static address (outside typical DHCP range)
+    echo "${base%.*}.221"
+}
+
+# ── Construct gateway ─────────────────────────────────────────────────────
+
+detect_gateway() {
+    ip route | awk '/^default via / {print $3; exit}' 2>/dev/null || echo ""
+}
+
+detect_dns() {
+    # systemd-resolved
+    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        resolvectl dns 2>/dev/null | awk '{print $2}' | head -2 | paste -sd ',' - || \
+        echo "8.8.8.8,8.8.4.4"
+    else
+        echo "8.8.8.8,8.8.4.4"
+    fi
+}
+
+# ── Main logic ─────────────────────────────────────────────────────────────
+
+main() {
+    if [ "$(id -u)" -ne 0 ]; then
+        err "This script must be run as root (use sudo)."
+        exit 1
+    fi
+
+    local iface="${1:-}"
+    local ip_addr="${2:-}"
+
+    # Auto-detect interface
+    if [ -z "$iface" ]; then
+        iface=$(detect_iface) || {
+            err "Could not detect an active network interface."
+            err "Please specify one manually: sudo $0 <interface> [ip]"
+            exit 1
+        }
+        info "Detected active interface: $iface"
+    fi
+
+    # Validate interface
+    if ! ip link show "$iface" &>/dev/null; then
+        err "Interface '$iface' does not exist."
+        info "Available interfaces:"
+        ip -br link show | awk '{print "  " $1}'
+        exit 1
+    fi
+
+    # Detect current subnet
+    local cidr
+    cidr=$(detect_subnet "$iface")
+    if [ -z "$cidr" ]; then
+        warn "Interface '$iface' has no IPv4 address. Checking link..."
+        if ! ip link show "$iface" | grep -q "state UP"; then
+            err "Interface '$iface' is DOWN. Bring it up first."
+            exit 1
+        fi
+        err "No IP detected on $iface. Is a DHCP server available?"
+        exit 1
+    fi
+    info "Current IP/subnet: $cidr"
+
+    # Derive or accept IP
+    if [ -z "$ip_addr" ]; then
+        ip_addr=$(suggest_ip "$cidr")
+        info "Suggested static IP: $ip_addr"
+    fi
+
+    # Detect gateway
+    local gateway
+    gateway=$(detect_gateway)
+    if [ -z "$gateway" ]; then
+        local ip_base="${cidr%.*}"
+        gateway="${ip_base}.1"
+        warn "Could not detect gateway. Using $gateway (common default)."
+    else
+        info "Detected gateway: $gateway"
+    fi
+
+    # Detect DNS
+    local dns
+    dns=$(detect_dns)
+    info "DNS servers: $dns"
+
+    # Determine netplan config filename
+    local netplan_file="/etc/netplan/99-realtime-mapping-static.yaml"
+
+    # Backup existing netplan configs
+    info "Backing up existing netplan configs..."
+    mkdir -p /etc/netplan/backup
+    for f in /etc/netplan/*.yaml; do
+        [ -f "$f" ] && cp "$f" "/etc/netplan/backup/$(basename "$f").bak.$(date +%Y%m%d_%H%M%S)"
+    done
+
+    # Write netplan config
+    info "Writing netplan config to $netplan_file ..."
+    cat > "$netplan_file" <<NETPLANEOF
+# Real-time Mapping — static LAN IP config
+# Generated by setup_dhcp.sh on $(date)
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${iface}:
+      dhcp4: no
+      addresses:
+        - ${ip_addr}/24
+      routes:
+        - to: default
+          via: ${gateway}
+      nameservers:
+        addresses: [${dns}]
+NETPLANEOF
+
+    ok "Netplan config written."
+
+    # Apply
+    info "Applying netplan config..."
+    if netplan apply; then
+        ok "Netplan applied successfully!"
+    else
+        err "netplan apply failed. Restoring backups..."
+        for f in /etc/netplan/backup/*.yaml.bak.*; do
+            local orig="${f%.bak.*}"
+            orig="$(basename "$orig")"
+            cp "$f" "/etc/netplan/$orig"
+        done
+        rm -f "$netplan_file"
+        netplan apply 2>/dev/null || true
+        err "Restored previous config. No changes made."
+        exit 1
+    fi
+
+    echo ""
+    ok "===== Setup complete ====="
+    info "Your laptop should now always get IP: $ip_addr"
+    info "Remote plot URL: http://${ip_addr}:8090"
+    echo ""
+    info "To verify:"
+    echo "   ip addr show $iface"
+    echo ""
+    info "To undo and revert to DHCP:"
+    echo "   sudo rm $netplan_file && sudo netplan apply"
+    echo ""
+
+    # Try to show new IP
+    sleep 2
+    local new_ip
+    new_ip=$(ip -4 addr show "$iface" 2>/dev/null | grep -oP 'inet \K[\d.]+')
+    if [ -n "$new_ip" ]; then
+        ok "Current IP: $new_ip"
+    fi
+}
+
+main "$@"

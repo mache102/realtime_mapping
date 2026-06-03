@@ -16,12 +16,28 @@ from functools import partial
 import importlib
 import argparse
 import math
+import sys
 from typing import Dict, Any, Tuple, Optional, List
+
+from .remote_plot_server import RemotePlotServer, get_lan_ip, resolve_static_dir
+from .dummy_data_generator import DummyDataGenerator
 
 
 class RealtimeMapper(Node):
-    def __init__(self, config_path: str):
+    def __init__(
+        self,
+        config_path: str,
+        remote_plot: bool = False,
+        remote_plot_port: int = 8090,
+        dummy_data: bool = False,
+    ):
         super().__init__('realtime_mapper')
+
+        self.remote_plot_enabled = remote_plot
+        self.remote_plot_port = remote_plot_port
+        self.dummy_data_enabled = dummy_data
+        self.remote_server: Optional[RemotePlotServer] = None
+        self.dummy_generator: Optional[DummyDataGenerator] = None
 
         # Load the configuration file
         self.config = self.load_config(config_path)
@@ -29,16 +45,23 @@ class RealtimeMapper(Node):
         # Initialize map data structures
         self.initialize_map()
 
-        # Configure ROS 2 subscriptions
-        self.setup_subscribers()
+        # Thread control
+        self.lock = threading.Lock()
+        self.running = True
+
+        if self.dummy_data_enabled:
+            self._setup_dummy_data()
+        else:
+            # Configure ROS 2 subscriptions
+            self.setup_subscribers()
 
         # Initialize visualization and persistence
         self.setup_visualization()
         self.setup_data_storage()
 
-        # Thread control
-        self.lock = threading.Lock()
-        self.running = True
+        # Start remote plot server if requested
+        if self.remote_plot_enabled:
+            self._start_remote_server()
 
         self.get_logger().info("Realtime Mapper initialized")
 
@@ -84,6 +107,55 @@ class RealtimeMapper(Node):
         self.get_logger().info(
             f"Map initialized: {self.map_width}x{self.map_height}, cell_size: {self.cell_size}m"
         )
+
+    def _setup_dummy_data(self) -> None:
+        """Initialize the dummy data generator for offline testing."""
+        self.dummy_generator = DummyDataGenerator(
+            map_width=self.map_width,
+            map_height=self.map_height,
+            cell_size=self.cell_size,
+            origin_x=self.origin_x,
+            origin_y=self.origin_y,
+            update_rate=self.update_rate,
+        )
+        self.dummy_generator.start(
+            self.heatmap_values,
+            self.heatmap_counts,
+            self.current_positions,
+            self.lock,
+        )
+        self.get_logger().info(
+            "Dummy data generator started — no ROS subscriptions active"
+        )
+
+    def _start_remote_server(self) -> None:
+        """Launch the remote plot server on a daemon thread."""
+        static_dir = resolve_static_dir(None)
+        if static_dir is None:
+            self.get_logger().warn(
+                "Remote plot enabled but no frontend build found. "
+                "Run 'cd remote-plot && pnpm install && pnpm build' first."
+            )
+
+        self.remote_server = RemotePlotServer(
+            port=self.remote_plot_port,
+            static_dir=static_dir,
+        )
+
+        server_thread = threading.Thread(
+            target=self.remote_server.run, daemon=True
+        )
+        server_thread.start()
+
+        lan_ip = get_lan_ip()
+        url = f"http://{lan_ip}:{self.remote_plot_port}"
+        self.get_logger().info(
+            f"Remote plot server started at {url}"
+        )
+        print(f"\n{'='*60}")
+        print(f"  Remote plot available at: {url}")
+        print(f"  Open this URL on your phone/tablet browser.")
+        print(f"{'='*60}\n")
 
     def setup_subscribers(self):
         """Create ROS 2 subscriptions for each configured input."""
@@ -409,6 +481,25 @@ class RealtimeMapper(Node):
                     xs, ys = [], []
                 self.position_marker.set_data(xs, ys)
 
+                # Push data to remote plot server
+                if self.remote_server is not None:
+                    extent = [
+                        self.origin_x - self.map_width * self.cell_size / 2,
+                        self.origin_x + self.map_width * self.cell_size / 2,
+                        self.origin_y - self.map_height * self.cell_size / 2,
+                        self.origin_y + self.map_height * self.cell_size / 2,
+                    ]
+                    self.remote_server.update_and_broadcast(
+                        self.heatmap_values,
+                        self.heatmap_counts,
+                        [(x, y) for x, y in positions],
+                        extent,
+                        {
+                            "min": self.sensor_value_range["min"],
+                            "max": self.sensor_value_range["max"],
+                        },
+                    )
+
         return [self.im, self.position_marker]
 
     def save_csv_data(self):
@@ -593,6 +684,12 @@ def main():
                        help='Configuration file path')
     parser.add_argument('--interactive', '-i', action='store_true',
                        help='Interactive topic selection')
+    parser.add_argument('--remote-plot', action='store_true',
+                       help='Enable remote plot server for browser access')
+    parser.add_argument('--remote-plot-port', type=int, default=8090,
+                       help='Port for the remote plot server (default: 8090)')
+    parser.add_argument('--dummy-data', action='store_true',
+                       help='Use synthetic contour-like data instead of ROS topics')
 
     args = parser.parse_args()
 
@@ -605,12 +702,18 @@ def main():
                 print(f"Selected: Position={pos_topic[0]}, Sensor={sensor_topic[0]}")
                 # Update configuration dynamically (implementation omitted)
 
-        mapper = RealtimeMapper(args.config)
+        mapper = RealtimeMapper(
+            args.config,
+            remote_plot=args.remote_plot,
+            remote_plot_port=args.remote_plot_port,
+            dummy_data=args.dummy_data,
+        )
 
-        # Run ROS 2 spinning loop on a background thread
-        ros_thread = threading.Thread(target=lambda: rclpy.spin(mapper))
-        ros_thread.daemon = True
-        ros_thread.start()
+        # Run ROS 2 spinning loop on a background thread (skip if dummy data)
+        if not args.dummy_data:
+            ros_thread = threading.Thread(target=lambda: rclpy.spin(mapper))
+            ros_thread.daemon = True
+            ros_thread.start()
 
         # Drive the visualization on the main thread
         mapper.start_visualization()

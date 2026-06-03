@@ -1,0 +1,101 @@
+/* ─── Remote Plot – Griz Style overrides ─── */
+
+/* Override body for full-height, no-scroll layout */
+body {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--bg-main);
+  color: var(--text-main);
+}
+
+/* ─── Plot area: 50% height, square ─── */
+#plot {
+  flex: 0 0 50dvh;
+  width: 100%;
+  min-height: 0;
+}
+
+/* Override Plotly's default white background in dark mode */
+body.dark-mode #plot .main-svg {
+  background: var(--bg-main) !important;
+}
+
+/* ─── Controls row: small ─── */
+#controls {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  flex-shrink: 0;
+}
+
+#reconnect-btn {
+  font-size: 1rem;
+  padding: 0.35rem 0.75rem;
+  border: 0.2rem solid var(--black-50);
+  background-color: var(--light-gray);
+  border-radius: 0;
+  cursor: pointer;
+  font-family: "Roboto", sans-serif;
+  font-weight: bold;
+  color: var(--black);
+}
+
+#reconnect-btn:hover {
+  border-color: var(--black);
+  background-color: var(--hover-light-gray);
+  transform: scale(1.05);
+}
+
+#reconnect-btn:active {
+  transform: scale(0.98);
+}
+
+/* ─── Status indicator ─── */
+#status-indicator {
+  font-size: 0.9rem;
+  font-weight: bold;
+  font-family: "Roboto", sans-serif;
+}
+
+.status-connecting {
+  color: var(--orange);
+}
+
+.status-connected {
+  color: var(--green);
+}
+
+.status-disconnected {
+  color: var(--red);
+}
+
+/* ─── Log textarea: fills remaining space ─── */
+#log-area {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  padding: 0.5rem;
+  border: none;
+  border-top: 0.2rem solid var(--black-20);
+  border-radius: 0;
+  background-color: var(--white);
+  color: var(--black);
+  font-family: "Roboto Mono", monospace;
+  font-size: 0.75rem;
+  font-weight: normal;
+  line-height: 1.4;
+  resize: none;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+/* Dark mode adjustments */
+body.dark-mode #log-area {
+  background-color: var(--white);
+  color: var(--black);
+}
